@@ -44,7 +44,7 @@ class TradingStrategy(Strategy):
         
         allocation_dict = {}
         candidates = []
-        lookback_mom = 35
+        lookback_mom = 60
         # --- 2. LOOP THROUGH SECTORS ---
         for sector in self.sectors:
             closes = []

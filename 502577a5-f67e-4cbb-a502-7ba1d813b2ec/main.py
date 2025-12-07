@@ -67,7 +67,7 @@ class TradingStrategy(Strategy):
                     if momentum > 0:
                         # --- 3. MANUAL RSI CALCULATION (10-Day) ---
                         # We do this here to avoid the "Import RSI" crash
-                        rsi_period = 10
+                        rsi_period = 14
                         if len(closes) > rsi_period + 1:
                             # Get last 11 days
                             recent = closes[-(rsi_period+1):]

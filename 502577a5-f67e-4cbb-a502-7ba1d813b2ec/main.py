@@ -1,92 +1,77 @@
 from surmount.base_class import Strategy, TargetAllocation
 from surmount.logging import log
-from surmount.data import Asset
 
 class TradingStrategy(Strategy):
     def __init__(self):
-        # Define the 11 Select Sector SPDR ETFs
-        self.sectors = [
-            "XLK", # Technology
-            "XLF", # Financials
-            "XLV", # Health Care
-            "XLY", # Consumer Discretionary
-            "XLP", # Consumer Staples
-            "XLE", # Energy
-            "XLI", # Industrials
-            "XLB", # Materials
-            "XLU", # Utilities
-            "XLRE", # Real Estate
-            "XLC"  # Communication Services
+        # 1. Define your Universe clearly
+        self.tickers = [
+            "XLK", "XLF", "XLV", "XLY", "XLP", 
+            "XLE", "XLI", "XLB", "XLU", "XLRE", "XLC"
         ]
-        self.tickers = self.sectors
+        # Log to confirm this specific code is running
+        log("Initialize Sector Strategy...")
 
     @property
     def interval(self):
-        # run this check once a day
+        # "1day" is best for sector rotation
         return "1day"
 
     @property
     def assets(self):
+        # This tells the engine WHICH data to fetch. 
+        # If this list is wrong, data["ohlcv"] will be empty.
         return self.tickers
 
     @property
     def data(self):
-        # Request OHLCV data for all sectors
+        # Return empty list if you only need OHLCV data
         return []
 
     def run(self, data):
-        # 1. Initialize an empty dictionary for our allocation
+        # 2. Safety Check: Ensure we actually have data
+        if not data or "ohlcv" not in data:
+            log("No data received.")
+            return TargetAllocation({})
+        
         allocation_dict = {}
-        
-        # 2. Define our "Momentum" Lookback (e.g., 126 trading days = ~6 months)
-        lookback = 126
-        
-        # Dictionary to store performance for each sector
         performance = {}
+        lookback = 126  # 6 Months
 
-        # 3. Loop through each sector to calculate returns
+        # 3. Calculate Momentum
         for ticker in self.tickers:
-            ohlcv = data["ohlcv"]
+            # Safe access to OHLCV data
+            ohlcv_data = data["ohlcv"]
             
-            # Check if we have enough data points for this ticker
-            if len(ohlcv) > 0 and len(ohlcv) >= lookback:
-                # Get the data for this specific ticker
-                # The data structure is usually a list of dicts per ticker
-                # We need to ensure we access the specific ticker's history
-                # Note: In Surmount, data['ohlcv'] often comes as a list of all requested assets. 
-                # We filter for the specific ticker's closing prices.
-                
-                # Extract closing prices for this specific ticker
-                closes = [x[ticker]["close"] for x in ohlcv if ticker in x]
-                
-                if len(closes) >= lookback:
-                    current_price = closes[-1]
-                    past_price = closes[-lookback]
-                    
-                    # Calculate simple return (Momentum)
-                    roc = (current_price - past_price) / past_price
-                    performance[ticker] = roc
+            # Check if this specific ticker has data in the bundle
+            # Note: data["ohlcv"] is a list of dictionaries like [{'AAPL': ...}, {'GOOG': ...}] 
+            # OR a dictionary of lists depending on version. 
+            # In standard Surmount, it is usually a list of dicts.
+            
+            # Helper to get close prices for this ticker specifically
+            ticker_closes = [x[ticker]["close"] for x in ohlcv_data if ticker in x]
+
+            if len(ticker_closes) > lookback:
+                current = ticker_closes[-1]
+                past = ticker_closes[-lookback]
+                momentum = (current - past) / past
+                performance[ticker] = momentum
             else:
-                # Not enough data? Skip it.
-                continue
+                performance[ticker] = -999 # Ignore assets with insufficient history
 
-        # 4. Sort the sectors by performance (Highest to Lowest)
-        # sorted_sectors will be a list of tuples: [('XLK', 0.15), ('XLE', 0.12), ...]
-        sorted_sectors = sorted(performance.items(), key=lambda item: item[1], reverse=True)
+        # 4. Rank and Select Top 2
+        # Sort by momentum descending
+        sorted_sectors = sorted(performance.items(), key=lambda x: x[1], reverse=True)
+        
+        # Filter out the -999s
+        valid_sectors = [x for x in sorted_sectors if x[1] > -999]
 
-        # 5. Select the Top 2
-        if len(sorted_sectors) >= 2:
-            top_picks = [sorted_sectors[0][0], sorted_sectors[1][0]]
+        if len(valid_sectors) >= 2:
+            top_2 = [valid_sectors[0][0], valid_sectors[1][0]]
+            log(f"Top Sectors: {top_2}")
             
-            log(f"Top 2 Momentum Sectors: {top_picks}")
-            
-            # 6. Assign 50% allocation to each
-            for ticker in top_picks:
+            for ticker in top_2:
                 allocation_dict[ticker] = 0.5
         else:
-            # Fallback: If not enough data, hold cash (empty allocation)
-            log("Not enough data to calculate momentum.")
+            log("Not enough valid data to trade.")
 
-        # 7. Return the target allocation
-        # Surmount will automatically buy/sell to match these %s
         return TargetAllocation(allocation_dict)

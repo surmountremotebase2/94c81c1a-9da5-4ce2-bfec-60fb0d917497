@@ -3,15 +3,19 @@ from surmount.logging import log
 
 class TradingStrategy(Strategy):
     def __init__(self):
+        # 1. Define the 11 Sectors
         self.sectors = [
-            "XLK", "XLF", "XLV", "XLY", "XLP", "XLE", "XLI", "XLB", "XLU", 
-            "XLRE", "XLC"
+            "XLK", "XLF", "XLV", "XLY", "XLP", 
+            "XLE", "XLI", "XLB", "XLU", "XLRE", "XLC"
         ]
-        # We need IYR to act as the "stunt double" for XLRE before 2015
-        self.proxies = {"XLRE": "IYR"} 
         
-        # We request data for ALL sectors + the proxy
+        # 2. Define Proxies (Use IYR if XLRE is missing)
+        self.proxies = {"XLRE": "IYR"}
+        
+        # 3. Request data for all sectors + IYR
         self.tickers = self.sectors + ["IYR"]
+        
+        log("Strategy Initialized. Universe: " + str(self.tickers))
 
     @property
     def interval(self):
@@ -26,57 +30,69 @@ class TradingStrategy(Strategy):
         return []
 
     def run(self, data):
-        if not data or "ohlcv" not in data:
+        # 1. Safety Check
+        if not data or "ohlcv" not in data or len(data["ohlcv"]) == 0:
+            log("Waiting for data...")
             return TargetAllocation({})
         
+        ohlcv_list = data["ohlcv"]
         allocation_dict = {}
         performance = {}
         lookback = 126  # 6 Months
-
+        
+        # 2. Loop through each SECTOR to build its specific history
         for sector in self.sectors:
-            # 1. Determine which ticker to check for data
-            # Default to the normal sector ticker
-            check_ticker = sector 
+            sector_closes = []
             
-            # If the normal ticker is missing data (e.g., XLRE before 2015), try the proxy
-            if sector in self.proxies:
-                if sector not in data["ohlcv"] or len(data["ohlcv"][sector]) < lookback:
-                    check_ticker = self.proxies[sector]
-
-            # 2. Check if we have data for whatever ticker we decided to use
-            if check_ticker not in data["ohlcv"]:
-                continue # Skip XLC before 2018 (it has no proxy, so we just ignore it)
+            # STITCHING LOGIC:
+            # We look at every day in the history.
+            # If the sector exists (e.g. XLRE), use it.
+            # If not, check if the PROXY exists (e.g. IYR), use that.
+            for day_data in ohlcv_list:
+                if sector in day_data:
+                    sector_closes.append(day_data[sector]["close"])
+                elif sector in self.proxies and self.proxies[sector] in day_data:
+                    # Proxy stitching (using IYR data as XLRE)
+                    sector_closes.append(day_data[self.proxies[sector]]["close"])
             
-            ticker_data = data["ohlcv"][check_ticker]
-            
-            if len(ticker_data) > lookback:
-                current = ticker_data[-1]["close"]
-                past = ticker_data[-lookback]["close"]
-                momentum = (current - past) / past
-                performance[sector] = momentum # We store it under the original name "XLRE"
+            # 3. Calculate Momentum if we have enough stitched history
+            if len(sector_closes) > lookback:
+                current_price = sector_closes[-1]
+                past_price = sector_closes[-lookback]
+                
+                # Check for zero division
+                if past_price > 0:
+                    momentum = (current_price - past_price) / past_price
+                    performance[sector] = momentum
             else:
-                continue
+                # Log only once per backtest to avoid spam, or ignore
+                pass
 
-        # 3. Rank and Trade
+        # 4. Rank and Select Top 2
+        # Sort descending by momentum
         sorted_sectors = sorted(performance.items(), key=lambda x: x[1], reverse=True)
         
         if len(sorted_sectors) >= 2:
-            # Pick Top 2
-            top_2 = [sorted_sectors[0][0], sorted_sectors[1][0]]
+            top_picks = [sorted_sectors[0][0], sorted_sectors[1][0]]
             
-            # LOGIC FIX: If the winner is "XLRE" but we are in 2010, we must buy "IYR"
-            final_orders = []
-            for pick in top_2:
-                # If we picked XLRE, but XLRE doesn't exist yet, buy IYR
-                if pick == "XLRE" and "XLRE" not in data["ohlcv"]:
-                    final_orders.append("IYR")
-                else:
-                    final_orders.append(pick)
-            
-            log(f"Top Sectors: {top_2} -> Buying: {final_orders}")
-            
-            for asset in final_orders:
-                allocation_dict[asset] = 0.5
+            # LOGGING: Verify it's working
+            # log(f"Date: {ohlcv_list[-1][self.tickers[0]]['date']} | Top: {top_picks}")
 
-        return TargetAllocation(allocation_dict)
+            # 5. Execution Logic
+            # If we picked XLRE, but it doesn't exist today, we must buy IYR
+            final_orders = []
+            latest_day_data = ohlcv_list[-1]
+            
+            for pick in top_picks:
+                if pick in latest_day_data:
+                    final_orders.append(pick)
+                elif pick in self.proxies and self.proxies[pick] in latest_day_data:
+                    final_orders.append(self.proxies[pick])
+            
+            # Equal weight the valid orders
+            if len(final_orders) > 0:
+                weight = 1.0 / len(final_orders)
+                for asset in final_orders:
+                    allocation_dict[asset] = weight
+        
         return TargetAllocation(allocation_dict)

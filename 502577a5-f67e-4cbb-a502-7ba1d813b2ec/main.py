@@ -3,75 +3,80 @@ from surmount.logging import log
 
 class TradingStrategy(Strategy):
     def __init__(self):
-        # 1. Define your Universe clearly
-        self.tickers = [
-            "XLK", "XLF", "XLV", "XLY", "XLP", 
-            "XLE", "XLI", "XLB", "XLU", "XLRE", "XLC"
+        self.sectors = [
+            "XLK", "XLF", "XLV", "XLY", "XLP", "XLE", "XLI", "XLB", "XLU", 
+            "XLRE", "XLC"
         ]
-        # Log to confirm this specific code is running
-        log("Initialize Sector Strategy...")
+        # We need IYR to act as the "stunt double" for XLRE before 2015
+        self.proxies = {"XLRE": "IYR"} 
+        
+        # We request data for ALL sectors + the proxy
+        self.tickers = self.sectors + ["IYR"]
 
     @property
     def interval(self):
-        # "1day" is best for sector rotation
         return "1day"
 
     @property
     def assets(self):
-        # This tells the engine WHICH data to fetch. 
-        # If this list is wrong, data["ohlcv"] will be empty.
         return self.tickers
 
     @property
     def data(self):
-        # Return empty list if you only need OHLCV data
         return []
 
     def run(self, data):
-        # 2. Safety Check: Ensure we actually have data
         if not data or "ohlcv" not in data:
-            log("No data received.")
             return TargetAllocation({})
         
         allocation_dict = {}
         performance = {}
         lookback = 126  # 6 Months
 
-        # 3. Calculate Momentum
-        for ticker in self.tickers:
-            # Safe access to OHLCV data
-            ohlcv_data = data["ohlcv"]
+        for sector in self.sectors:
+            # 1. Determine which ticker to check for data
+            # Default to the normal sector ticker
+            check_ticker = sector 
             
-            # Check if this specific ticker has data in the bundle
-            # Note: data["ohlcv"] is a list of dictionaries like [{'AAPL': ...}, {'GOOG': ...}] 
-            # OR a dictionary of lists depending on version. 
-            # In standard Surmount, it is usually a list of dicts.
-            
-            # Helper to get close prices for this ticker specifically
-            ticker_closes = [x[ticker]["close"] for x in ohlcv_data if ticker in x]
+            # If the normal ticker is missing data (e.g., XLRE before 2015), try the proxy
+            if sector in self.proxies:
+                if sector not in data["ohlcv"] or len(data["ohlcv"][sector]) < lookback:
+                    check_ticker = self.proxies[sector]
 
-            if len(ticker_closes) > lookback:
-                current = ticker_closes[-1]
-                past = ticker_closes[-lookback]
+            # 2. Check if we have data for whatever ticker we decided to use
+            if check_ticker not in data["ohlcv"]:
+                continue # Skip XLC before 2018 (it has no proxy, so we just ignore it)
+            
+            ticker_data = data["ohlcv"][check_ticker]
+            
+            if len(ticker_data) > lookback:
+                current = ticker_data[-1]["close"]
+                past = ticker_data[-lookback]["close"]
                 momentum = (current - past) / past
-                performance[ticker] = momentum
+                performance[sector] = momentum # We store it under the original name "XLRE"
             else:
-                performance[ticker] = -999 # Ignore assets with insufficient history
+                continue
 
-        # 4. Rank and Select Top 2
-        # Sort by momentum descending
+        # 3. Rank and Trade
         sorted_sectors = sorted(performance.items(), key=lambda x: x[1], reverse=True)
         
-        # Filter out the -999s
-        valid_sectors = [x for x in sorted_sectors if x[1] > -999]
-
-        if len(valid_sectors) >= 2:
-            top_2 = [valid_sectors[0][0], valid_sectors[1][0]]
-            log(f"Top Sectors: {top_2}")
+        if len(sorted_sectors) >= 2:
+            # Pick Top 2
+            top_2 = [sorted_sectors[0][0], sorted_sectors[1][0]]
             
-            for ticker in top_2:
-                allocation_dict[ticker] = 0.5
-        else:
-            log("Not enough valid data to trade.")
+            # LOGIC FIX: If the winner is "XLRE" but we are in 2010, we must buy "IYR"
+            final_orders = []
+            for pick in top_2:
+                # If we picked XLRE, but XLRE doesn't exist yet, buy IYR
+                if pick == "XLRE" and "XLRE" not in data["ohlcv"]:
+                    final_orders.append("IYR")
+                else:
+                    final_orders.append(pick)
+            
+            log(f"Top Sectors: {top_2} -> Buying: {final_orders}")
+            
+            for asset in final_orders:
+                allocation_dict[asset] = 0.5
 
+        return TargetAllocation(allocation_dict)
         return TargetAllocation(allocation_dict)
